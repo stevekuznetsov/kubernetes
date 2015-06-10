@@ -15,17 +15,62 @@
 # limitations under the License.
 
 # Creates resources from the example, assumed to be run from Kubernetes repo root
+echo
+echo "===> Initializing:"
 export OPENSHIFT_EXAMPLE=$(pwd)/examples/openshift-origin
+echo Set OPENSHIFT_EXAMPLE=${OPENSHIFT_EXAMPLE}
 export OPENSHIFT_CONFIG=${OPENSHIFT_EXAMPLE}/config
+echo Set OPENSHIFT_CONFIG=${OPENSHIFT_CONFIG}
 mkdir ${OPENSHIFT_CONFIG}
-cluster/kubectl.sh config view --output=yaml --flatten=true --minify=true > ${OPENSHIFT_CONFIG}/kubeconfig
-cluster/kubectl.sh create -f $OPENSHIFT_EXAMPLE/openshift-service.yaml
-sleep 60
-export PUBLIC_IP=$(cluster/kubectl.sh get services openshift --template="{{ index .status.loadBalancer.ingress 0 \"ip\" }}")
-echo "PUBLIC IP: ${PUBLIC_IP}"
-docker run --privileged -v ${OPENSHIFT_CONFIG}:/config openshift/origin start master --write-config=/config --kubeconfig=/config/kubeconfig --master=https://localhost:8443 --public-master=https://${PUBLIC_IP}:8443
-sudo -E chown ${USER} -R ${OPENSHIFT_CONFIG}
-docker run -i -t --privileged -e="OPENSHIFTCONFIG=/config/admin.kubeconfig" -v ${OPENSHIFT_CONFIG}:/config openshift/origin ex bundle-secret openshift-config -f /config &> ${OPENSHIFT_EXAMPLE}/secret.json
-cluster/kubectl.sh create -f ${OPENSHIFT_EXAMPLE}/secret.json
-cluster/kubectl.sh create -f ${OPENSHIFT_EXAMPLE}/openshift-controller.yaml
-cluster/kubectl.sh get pods | grep openshift
+echo Made dir ${OPENSHIFT_CONFIG}
+echo
+
+echo "===> Setting up etcd-discovery:"
+kubectl create -f ${OPENSHIFT_EXAMPLE}/etcd-discovery-controller.yaml
+kubectl create -f ${OPENSHIFT_EXAMPLE}/etcd-discovery-service.yaml
+echo
+
+echo "===> Setting up etcd:"
+kubectl create -f ${OPENSHIFT_EXAMPLE}/etcd-controller.yaml
+kubectl create -f ${OPENSHIFT_EXAMPLE}/etcd-service.yaml
+echo
+
+echo "===> Setting up openshift-origin:"
+kubectl config view --output=yaml --flatten=true --minify=true > ${OPENSHIFT_CONFIG}/kubeconfig
+kubectl create -f ${OPENSHIFT_EXAMPLE}/openshift-service.yaml
+echo
+
+export PUBLIC_OPENSHIFT_IP=""
+echo "===> Waiting for public IP to be set for the OpenShift Service."
+echo "Mistakes in service setup can cause this to loop infinitely if an"
+echo "external IP is never set. Ensure that the replication controller"
+echo "is set to use an external load balancer. This process may take" 
+echo "a few minutes. Errors can be found in the log file found at:"
+echo ${OPENSHIFT_EXAMPLE}/openshift-startup.log
+while [ ${#PUBLIC_OPENSHIFT_IP} -lt 1 ]; do
+	echo -n .
+	sleep 1
+	{
+		export PUBLIC_OPENSHIFT_IP=$(kubectl get services openshift --template="{{ index .status.loadBalancer.ingress 0 \"ip\" }}")
+	} 2> ${OPENSHIFT_EXAMPLE}/openshift-startup.log
+	if [[ ! ${PUBLIC_OPENSHIFT_IP} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+		export PUBLIC_OPENSHIFT_IP=""
+	fi
+done
+echo
+echo "Public OpenShift IP set to: ${PUBLIC_OPENSHIFT_IP}"
+echo
+
+echo "===> Configuring OpenShift:"
+docker run --privileged -v ${OPENSHIFT_CONFIG}:/config openshift/origin start master --write-config=/config --kubeconfig=/config/kubeconfig --master=https://localhost:8443 --public-master=https://${PUBLIC_OPENSHIFT_IP}:8443 --etcd=http://etcd:2379
+sudo -E chown -R ${USER} ${OPENSHIFT_CONFIG}
+
+docker run -it --privileged -e="KUBECONFIG=/config/admin.kubeconfig" -v ${OPENSHIFT_CONFIG}:/config openshift/origin cli secrets new openshift-config /config -o json &> ${OPENSHIFT_EXAMPLE}/secret.json
+kubectl create -f ${OPENSHIFT_EXAMPLE}/secret.json
+echo
+
+echo "===> Running OpenShift Master:"
+kubectl create -f ${OPENSHIFT_EXAMPLE}/openshift-controller.yaml
+echo
+
+echo Done.

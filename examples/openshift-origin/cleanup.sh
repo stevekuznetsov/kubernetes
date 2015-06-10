@@ -15,11 +15,30 @@
 # limitations under the License.
 
 # Cleans up resources from the example, assumed to be run from Kubernetes repo root
-
+echo
+echo
 export OPENSHIFT_EXAMPLE=$(pwd)/examples/openshift-origin
 export OPENSHIFT_CONFIG=${OPENSHIFT_EXAMPLE}/config
-rm -fr ${OPENSHIFT_CONFIG}
-cluster/kubectl.sh delete secrets openshift-config
-cluster/kubectl.sh stop rc openshift
-cluster/kubectl.sh delete rc openshift
-cluster/kubectl.sh delete services openshift
+
+echo "===> Removing OpenShift:"
+kubectl delete secrets openshift-config
+kubectl delete rc openshift
+kubectl delete services openshift
+echo
+
+echo "===> Removing etcd:"
+kubectl delete rc etcd
+kubectl delete services etcd
+echo
+
+echo "===> Removing etcd-discovery:"
+kubectl delete rc etcd-discovery
+kubectl delete services etcd-discovery
+echo
+
+echo "===> Removing local files:"
+rm -rf ${OPENSHIFT_CONFIG}
+rm ${OPENSHIFT_EXAMPLE}/secret.json
+echo
+
+echo Done.
