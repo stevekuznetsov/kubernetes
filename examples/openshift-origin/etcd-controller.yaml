@@ -33,6 +33,10 @@ spec:
           value: new
         - name: ETCD_INITIAL_CLUSTER_TOKEN
           value: etcd-cluster-hd84j
+        - name: ETCD_DISCOVERY_URL
+          value: http://etcd-discovery:2379
+        - name: ETCD_DISCOVERY_TOKEN
+          value: upay9zdbi9wy9y6bkfokn0w4n506c9gb9880qbvr
         - name: ETCD_DISCOVERY
           value: http://etcd-discovery:2379/v2/keys/discovery/upay9zdbi9wy9y6bkfokn0w4n506c9gb9880qbvr
         resources: {}
