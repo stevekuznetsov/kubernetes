@@ -87,7 +87,7 @@ func createAPIExtensionsConfig(
 		},
 		ExtraConfig: apiextensionsapiserver.ExtraConfig{
 			CRDRESTOptionsGetter: apiextensionsoptions.NewCRDRESTOptionsGetter(etcdOptions),
-			MasterCount:          3,
+			MasterCount:          1, // TODO: pass this in correctly
 			AuthResolverWrapper:  authResolverWrapper,
 			ServiceResolver:      serviceResolver,
 		},
