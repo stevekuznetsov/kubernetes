@@ -378,6 +378,9 @@ var (
 func TestListOptions(t *testing.T) {
 	for _, watchCacheEnabled := range []bool{true, false} {
 		t.Run(fmt.Sprintf("watchCacheEnabled=%t", watchCacheEnabled), func(t *testing.T) {
+			if watchCacheEnabled {
+				t.Skip(integration.ReasonWatchCache)
+			}
 			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.APIListChunking, true)()
 			etcdOptions := framework.DefaultEtcdOptions()
 			etcdOptions.EnableWatchCache = watchCacheEnabled
@@ -411,7 +414,7 @@ func TestListOptions(t *testing.T) {
 			}
 
 			// compact some of the revision history in etcd so we can test "too old" resource versions
-			_, kvClient, err := integration.GetEtcdClients(etcdOptions.StorageConfig.Transport)
+			_, client, err := integration.GetCRDBClients(etcdOptions.StorageConfig.Transport)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -419,7 +422,7 @@ func TestListOptions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = kvClient.Compact(context.Background(), int64(revision))
+			err = client.RawCompact(context.Background(), int64(revision))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -610,6 +613,9 @@ func TestListResourceVersion0(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.watchCacheEnabled {
+				t.Skip(integration.ReasonWatchCache)
+			}
 			defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.APIListChunking, true)()
 			etcdOptions := framework.DefaultEtcdOptions()
 			etcdOptions.EnableWatchCache = tc.watchCacheEnabled
@@ -800,16 +806,18 @@ func TestNameInFieldSelector(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		opts := metav1.ListOptions{
-			FieldSelector: tc.selector,
-		}
-		secrets, err := clientSet.CoreV1().Secrets(tc.namespace).List(context.TODO(), opts)
-		if err != nil {
-			t.Errorf("%s: Unexpected error: %v", tc.selector, err)
-		}
-		if len(secrets.Items) != tc.expectedSecrets {
-			t.Errorf("%s: Unexpected number of secrets: %d, expected: %d", tc.selector, len(secrets.Items), tc.expectedSecrets)
-		}
+		t.Run(tc.selector, func(t *testing.T) {
+			opts := metav1.ListOptions{
+				FieldSelector: tc.selector,
+			}
+			secrets, err := clientSet.CoreV1().Secrets(tc.namespace).List(context.TODO(), opts)
+			if err != nil {
+				t.Errorf("%s: Unexpected error: %v", tc.selector, err)
+			}
+			if len(secrets.Items) != tc.expectedSecrets {
+				t.Errorf("%s: Unexpected number of secrets: %d, expected: %d", tc.selector, len(secrets.Items), tc.expectedSecrets)
+			}
+		})
 	}
 }
 
@@ -1200,7 +1208,7 @@ func TestAPICRDProtobuf(t *testing.T) {
 	}
 	fooCRD, err = fixtures.CreateNewV1CustomResourceDefinition(fooCRD, apiExtensionClient, dynamicClient)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("could not create new CRD: %v", err)
 	}
 	crdGVR := schema.GroupVersionResource{Group: fooCRD.Spec.Group, Version: fooCRD.Spec.Versions[0].Name, Resource: "foos"}
 	crclient := dynamicClient.Resource(crdGVR).Namespace(testNamespace)
@@ -1417,6 +1425,12 @@ func TestTransform(t *testing.T) {
 	}
 	crdGVR := schema.GroupVersionResource{Group: fooCRD.Spec.Group, Version: fooCRD.Spec.Versions[0].Name, Resource: "foos"}
 	crclient := dynamicClient.Resource(crdGVR).Namespace(testNamespace)
+
+	previousList, err := crclient.List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		t.Fatalf("failed to list CRs before test: %v", err)
+	}
+	previousRV := previousList.GetResourceVersion()
 
 	testcases := []struct {
 		name          string
@@ -1958,21 +1972,29 @@ func TestTransform(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			rv, _ := strconv.Atoi(obj.GetResourceVersion())
-			if rv < 1 {
-				rv = 1
+			rv := obj.GetResourceVersion()
+			if rv == "" {
+				rv = "0"
+			} else {
+				rv = previousRV
 			}
 
+			ctx, cancel := context.WithTimeout(context.Background(), 10 * time.Second)
+			t.Cleanup(func() {
+				cancel()
+			})
+			t.Log("Beginning stream:")
 			w, err := client.Get().
 				Resource(resource).NamespaceIfScoped(obj.GetNamespace(), len(obj.GetNamespace()) > 0).
 				SetHeader("Accept", tc.accept).
 				VersionedParams(&metav1.ListOptions{
-					ResourceVersion: strconv.Itoa(rv - 1),
+					ResourceVersion: rv,
 					Watch:           true,
 					FieldSelector:   fields.OneTermEqualSelector("metadata.name", obj.GetName()).String(),
 				}, metav1.ParameterCodec).
 				Param("includeObject", string(tc.includeObject)).
-				Stream(context.TODO())
+				Stream(ctx)
+			t.Log("Began stream:")
 			if (tc.wantErr != nil) != (err != nil) {
 				t.Fatalf("unexpected error: %v", err)
 			}
