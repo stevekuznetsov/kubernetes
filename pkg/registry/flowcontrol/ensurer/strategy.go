@@ -221,6 +221,7 @@ func ensureConfiguration(wrapper configurationWrapper, strategy ensureStrategy, 
 
 	var current configurationObject
 	var err error
+	var mustGet bool
 	for {
 		current, err = wrapper.Get(bootstrap.GetName())
 		if err == nil {
@@ -228,6 +229,9 @@ func ensureConfiguration(wrapper configurationWrapper, strategy ensureStrategy, 
 		}
 		if !apierrors.IsNotFound(err) {
 			return fmt.Errorf("failed to retrieve %s type=%s name=%q error=%w", wrapper.TypeName(), configurationType, name, err)
+		}
+		if mustGet {
+			return fmt.Errorf("aborting ensure() due to lack of cache sync for %s type=%s name=%q", wrapper.TypeName(), configurationType, name)
 		}
 
 		// we always re-create a missing configuration object
@@ -240,6 +244,7 @@ func ensureConfiguration(wrapper configurationWrapper, strategy ensureStrategy, 
 			return fmt.Errorf("cannot create %s type=%s name=%q error=%w", wrapper.TypeName(), configurationType, name, err)
 		}
 		klog.V(5).InfoS(fmt.Sprintf("Something created the %s concurrently", wrapper.TypeName()), "type", configurationType, "name", name)
+		mustGet = true
 	}
 
 	klog.V(5).InfoS(fmt.Sprintf("The %s already exists, checking whether it is up to date", wrapper.TypeName()), "type", configurationType, "name", name)
