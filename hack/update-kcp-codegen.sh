@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 
-# set -o errexit
-# set -o nounset
-# set -o pipefail
+set -o errexit
+set -o nounset
+set -o pipefail
 
 KUBE_ROOT=$(dirname "${BASH_SOURCE[0]}")/..
 source "${KUBE_ROOT}/hack/lib/init.sh"
+unset GO111MODULE
 
-# kube::golang::setup_env
+#kube::golang::setup_env
 
 # go install github.com/kcp-dev/code-generator
 kcpcodegen=$(kube::util::find-binary "code-generator")
@@ -32,7 +33,7 @@ done
 # delimit by commas for the command
 GVS=$(echo "${GV_DIRS[*]// /,}" | sed 's|/|:|g' )
 
-set +e
+set -o xtrace
 ${kcpcodegen} informer,lister \
   --output-dir staging/src/k8s.io/client-go/kcp \
   --clientset-api-path k8s.io/client-go/kubernetes \
