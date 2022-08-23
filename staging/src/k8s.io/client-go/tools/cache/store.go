@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/kcp-dev/logicalcluster/v2"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/client-go/tools/clusters"
 )
 
 // Store is a generic object storage and processing interface.  A
@@ -109,10 +111,11 @@ func MetaNamespaceKeyFunc(obj interface{}) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("object has no meta: %v", err)
 	}
+	name := clusters.ToClusterAwareKey(logicalcluster.From(meta), meta.GetName())
 	if len(meta.GetNamespace()) > 0 {
-		return meta.GetNamespace() + "/" + meta.GetName(), nil
+		return meta.GetNamespace() + "/" + name, nil
 	}
-	return meta.GetName(), nil
+	return name, nil
 }
 
 // SplitMetaNamespaceKey returns the namespace and name that
@@ -120,18 +123,20 @@ func MetaNamespaceKeyFunc(obj interface{}) (string, error) {
 //
 // TODO: replace key-as-string with a key-as-struct so that this
 // packing/unpacking won't be necessary.
-func SplitMetaNamespaceKey(key string) (namespace, name string, err error) {
+func SplitMetaNamespaceKey(key string) (clusterName logicalcluster.Name, namespace, name string, err error) {
 	parts := strings.Split(key, "/")
 	switch len(parts) {
 	case 1:
 		// name only, no namespace
-		return "", parts[0], nil
+		clusterName, name := clusters.SplitClusterAwareKey(parts[0])
+		return clusterName, "", name, nil
 	case 2:
 		// namespace and name
-		return parts[0], parts[1], nil
+		clusterName, name := clusters.SplitClusterAwareKey(parts[0])
+		return clusterName, parts[0], name, nil
 	}
 
-	return "", "", fmt.Errorf("unexpected key format: %q", key)
+	return logicalcluster.Name{}, "", "", fmt.Errorf("unexpected key format: %q", key)
 }
 
 // `*cache` implements Indexer in terms of a ThreadSafeStore and an
