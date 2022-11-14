@@ -27,6 +27,8 @@ import (
 	"k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
 	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset"
 	externalinformers "k8s.io/apiextensions-apiserver/pkg/client/informers/externalversions"
+	kcpapiextensionsv1client "k8s.io/apiextensions-apiserver/pkg/client/kcp/clientset/versioned"
+	kcpapiextensionsv1informers "k8s.io/apiextensions-apiserver/pkg/client/kcp/informers/externalversions"
 	"k8s.io/apiextensions-apiserver/pkg/controller/apiapproval"
 	"k8s.io/apiextensions-apiserver/pkg/controller/establish"
 	"k8s.io/apiextensions-apiserver/pkg/controller/finalizer"
@@ -185,20 +187,17 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 		return nil, err
 	}
 
-	crdClient := c.ExtraConfig.Client
-	if crdClient == nil {
-		crdClient, err = clientset.NewForConfig(s.GenericAPIServer.LoopbackClientConfig)
-		if err != nil {
-			// it's really bad that this is leaking here, but until we can fix the test (which I'm pretty sure isn't even testing what it wants to test),
-			// we need to be able to move forward
-			return nil, fmt.Errorf("failed to create clientset: %v", err)
-		}
+	// TODO: today, apiextensions-apiserver APIs, clients, listers and informers are not in separate Go modules
+	// from the rest of the server, so we can't import the kcp-dev/apiextensions-apiserver module in order to get
+	// cluster-aware types, as it creates a cyclical issue with our patches on top of the actual apiserver module.
+	// Therefore, we have a copy of the types here for now and need thato create our own informer factory, for now.
+	crdClusterClient, err := kcpapiextensionsv1client.NewForConfig(s.GenericAPIServer.LoopbackClientConfig)
+	if err != nil {
+		// it's really bad that this is leaking here, but until we can fix the test (which I'm pretty sure isn't even testing what it wants to test),
+		// we need to be able to move forward
+		return nil, fmt.Errorf("failed to create clientset: %v", err)
 	}
-
-	s.Informers = c.ExtraConfig.Informers
-	if s.Informers == nil {
-		s.Informers = externalinformers.NewSharedInformerFactory(crdClient, 5*time.Minute)
-	}
+	informers := kcpapiextensionsv1informers.NewSharedInformerFactory(crdClusterClient, 5*time.Minute)
 
 	s.ClusterAwareCRDLister = c.ExtraConfig.ClusterAwareCRDLister
 
@@ -223,12 +222,12 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	}
 	s.DiscoveryGroupLister = s.rootDiscoveryHandler
 
-	establishingController := establish.NewEstablishingController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())
+	establishingController := establish.NewEstablishingController(informers.Apiextensions().V1().CustomResourceDefinitions(), crdClusterClient.ApiextensionsV1())
 
 	crdHandler, err := NewCustomResourceDefinitionHandler(
 		s.versionDiscoveryHandler,
 		s.groupDiscoveryHandler,
-		s.Informers.Apiextensions().V1().CustomResourceDefinitions(),
+		informers.Apiextensions().V1().CustomResourceDefinitions(),
 		delegateHandler,
 		c.ExtraConfig.CRDRESTOptionsGetter,
 		c.GenericConfig.AdmissionControl,
@@ -257,22 +256,22 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	// HACK: Added to allow serving core resources registered through CRDs (for the KCP scenario)
 	s.GenericAPIServer.Handler.NonGoRestfulMux.UnlistedHandlePrefix("/api/v1/", crdHandler)
 
-	namingController := status.NewNamingConditionController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1(), s.ClusterAwareCRDLister)
-	nonStructuralSchemaController := nonstructuralschema.NewConditionController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())
-	apiApprovalController := apiapproval.NewKubernetesAPIApprovalPolicyConformantConditionController(s.Informers.Apiextensions().V1().CustomResourceDefinitions(), crdClient.ApiextensionsV1())
+	namingController := status.NewNamingConditionController(informers.Apiextensions().V1().CustomResourceDefinitions(), crdClusterClient.ApiextensionsV1(), s.ClusterAwareCRDLister)
+	nonStructuralSchemaController := nonstructuralschema.NewConditionController(informers.Apiextensions().V1().CustomResourceDefinitions(), crdClusterClient.ApiextensionsV1())
+	apiApprovalController := apiapproval.NewKubernetesAPIApprovalPolicyConformantConditionController(informers.Apiextensions().V1().CustomResourceDefinitions(), crdClusterClient.ApiextensionsV1())
 	finalizingController := finalizer.NewCRDFinalizer(
-		s.Informers.Apiextensions().V1().CustomResourceDefinitions(),
-		crdClient.ApiextensionsV1(),
+		informers.Apiextensions().V1().CustomResourceDefinitions(),
+		crdClusterClient.ApiextensionsV1(),
 		crdHandler,
 	)
-	openapiController := openapicontroller.NewController(s.Informers.Apiextensions().V1().CustomResourceDefinitions())
+	openapiController := openapicontroller.NewController(informers.Apiextensions().V1().CustomResourceDefinitions())
 	var openapiv3Controller *openapiv3controller.Controller
 	if utilfeature.DefaultFeatureGate.Enabled(features.OpenAPIV3) {
-		openapiv3Controller = openapiv3controller.NewController(s.Informers.Apiextensions().V1().CustomResourceDefinitions())
+		openapiv3Controller = openapiv3controller.NewController(informers.Apiextensions().V1().CustomResourceDefinitions())
 	}
 
 	s.GenericAPIServer.AddPostStartHookOrDie("start-apiextensions-informers", func(context genericapiserver.PostStartHookContext) error {
-		s.Informers.Start(context.StopCh)
+		informers.Start(context.StopCh)
 		return nil
 	})
 	s.GenericAPIServer.AddPostStartHookOrDie("start-apiextensions-controllers", func(context genericapiserver.PostStartHookContext) error {
@@ -303,7 +302,7 @@ func (c completedConfig) New(delegationTarget genericapiserver.DelegationTarget)
 	// but we won't go healthy until we can handle the ones already present.
 	s.GenericAPIServer.AddPostStartHookOrDie("crd-informer-synced", func(context genericapiserver.PostStartHookContext) error {
 		return wait.PollImmediateUntil(100*time.Millisecond, func() (bool, error) {
-			if s.Informers.Apiextensions().V1().CustomResourceDefinitions().Informer().HasSynced() {
+			if informers.Apiextensions().V1().CustomResourceDefinitions().Informer().HasSynced() {
 				close(hasCRDInformerSyncedSignal)
 				return true, nil
 			}
