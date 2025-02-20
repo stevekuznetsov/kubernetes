@@ -17,6 +17,7 @@ limitations under the License.
 package clientcmd
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -608,6 +609,9 @@ func (config *inClusterClientConfig) ClientConfig() (*restclient.Config, error) 
 	icc, err := inClusterConfigProvider()
 	if err != nil {
 		return nil, err
+	}
+	if icc == nil {
+		return nil, errors.New("in-cluster config provider returned nil")
 	}
 
 	// in-cluster configs only takes a host, token, or CA file
